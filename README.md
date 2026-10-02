@@ -32,7 +32,7 @@ Needs Docker with compose.
 ```bash
 docker compose up -d --build        # API on http://localhost:8080
 docker compose run --rm tests       # test suite (real Postgres and Redis)
-./scripts/demo.sh                   # crash recovery + failover demo
+./scripts/demo.sh                   # crash recovery + failover demo (needs internet)
 ```
 
 ```bash
@@ -96,6 +96,7 @@ A step that was in flight when the worker died is executed again (at-least-once)
 | 8 workers try to claim the same run | Exactly one wins | `test_recovery.py::test_only_one_worker_can_claim_a_run` |
 | Worker stalls, another takes over, the first wakes up | The first worker's write is refused; no step output, no email | `test_recovery.py::test_worker_that_lost_its_lease_cannot_write` |
 | Job lost between Postgres commit and Redis | Reaper re-enqueues the `queued` run | `test_recovery.py::test_reaper_selects_only_stale_runs` |
+| LLM asks `fetch_url` for an internal address (`http://api1:8000`, `127.0.0.1`, `169.254.169.254`, `10.0.0.5`, `file://`), directly or through a redirect | Refused before any connection is made; the step fails on the first attempt with `blocked: private address` and is not retried | `test_fetch_url.py` |
 | `send_email` reached | Run stops at `awaiting_approval`; nothing is sent until approved; approve then sends exactly one | `test_approval.py::test_run_pauses_for_approval_then_approve_sends_exactly_one_email` |
 | Approval rejected | Run is `rejected`, outbox empty | `test_approval.py::test_reject_ends_run_without_sending` |
 | Approve and reject at the same time | One returns 200, the other 409 | `test_approval.py::test_concurrent_approve_and_reject_only_one_wins` |
@@ -107,8 +108,9 @@ A step that was in flight when the worker died is executed again (at-least-once)
 - Nginx health checking is passive (`max_fails=2 fail_timeout=10s`): it reacts to failed requests and
   retries them on the other replica. It does not poll `/health`; active checks need Nginx Plus or an
   external checker.
-- `fetch_url` will fetch any URL the LLM asks for, including internal ones. A real deployment needs an
-  allowlist or an egress proxy.
+- `fetch_url` only fetches public addresses: it resolves the host, refuses loopback, private and
+  link-local addresses, connects to the address it checked, and re-checks every redirect (max 3).
+  A real deployment would still put an egress proxy in front of it.
 - The Claude implementation is unit-tested against a fake client only. It has not been run against the
   live API.
 

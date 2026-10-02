@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # End-to-end demo: crash recovery of a run, then API failover behind Nginx.
+# Needs internet access: the run fetches https://example.com.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -42,7 +43,7 @@ curl -s $API/health; echo
 
 say "2. Create a run (same idempotency key sent twice returns the same run)"
 KEY="demo-$(date +%s)"
-BODY="{\"task\": \"Summarize http://nginx/health and email it\", \"idempotency_key\": \"$KEY\"}"
+BODY="{\"task\": \"Summarize https://example.com and email it\", \"idempotency_key\": \"$KEY\"}"
 RUN_ID=$(curl -s -X POST $API/runs -H 'content-type: application/json' -d "$BODY" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
 AGAIN=$(curl -s -X POST $API/runs -H 'content-type: application/json' -d "$BODY" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
 echo "  first POST  -> $RUN_ID"

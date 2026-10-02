@@ -11,7 +11,7 @@ from app.db import Session
 from app.llm import FINISH, LLM
 from app.log import run_id_var
 from app.models import Run, RunStep
-from app.tools import Tool
+from app.tools import NonRetryable, Tool
 
 log = logging.getLogger("agent")
 
@@ -153,6 +153,10 @@ async def execute_step(run_id: uuid.UUID, worker_id: str, step: RunStep, tool: T
 
         try:
             output = await asyncio.wait_for(tool.run(step.input), config.TOOL_TIMEOUT_SECONDS)
+        except NonRetryable as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            log.warning("step %d failed and will not be retried: %s", step.step_no, error)
+            break
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
             log.warning("step %d attempt %d/%d failed: %s", step.step_no, attempts, config.MAX_ATTEMPTS, error)
