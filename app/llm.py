@@ -1,4 +1,5 @@
 import asyncio
+import os
 import re
 from dataclasses import dataclass
 from typing import Protocol
@@ -53,4 +54,10 @@ class MockLLM:
 def build_llm() -> LLM:
     if config.LLM_PROVIDER == "mock":
         return MockLLM(delay=config.MOCK_LLM_DELAY_SECONDS)
+    if config.LLM_PROVIDER == "claude":
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            raise ValueError("LLM_PROVIDER=claude needs ANTHROPIC_API_KEY")
+        from app.llm_claude import ClaudeLLM
+
+        return ClaudeLLM()
     raise ValueError(f"unknown LLM_PROVIDER: {config.LLM_PROVIDER}")
