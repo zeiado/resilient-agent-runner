@@ -12,6 +12,11 @@ docker compose run --rm tests pytest tests/test_recovery.py -q
 docker compose logs -f worker       # JSON logs, one object per line
 ./scripts/demo.sh                   # crash recovery + failover demo
 docker compose down -v              # stop and delete data
+
+# optional local model (Ollama in compose, profile local-llm)
+docker compose --profile local-llm up -d
+docker compose exec ollama ollama pull qwen2.5:3b
+LLM_PROVIDER=ollama docker compose up -d worker
 ```
 
 The `tests` service mounts the working tree, so tests see code changes without a rebuild.
@@ -21,7 +26,10 @@ The `tests` service mounts the working tree, so tests see code changes without a
 
 - `app/agent.py`: claim, heartbeat, agent loop, step execution and retries. The core of the project.
 - `app/reaper.py`: finds stale runs and re-enqueues them.
-- `app/main.py`: HTTP API. `app/worker.py`: ARQ settings. `app/tools.py`, `app/llm.py`, `app/llm_claude.py`.
+- `app/main.py`: HTTP API. `app/worker.py`: ARQ settings. `app/tools.py`: the three tools.
+- `app/llm.py`: LLM interface, `MockLLM` (default), `build_llm()`. `app/llm_claude.py`: Claude.
+  `app/llm_openai.py`: OpenAI-compatible endpoints (`LLM_PROVIDER=ollama`); it reuses the tool
+  definitions and system prompt from `llm_claude.py`.
 - `alembic/versions/`: migrations. `nginx/nginx.conf`: load balancer.
 
 ## Rules
@@ -39,6 +47,10 @@ The `tests` service mounts the working tree, so tests see code changes without a
   (`tests/test_schema.py` compares them).
 - Tests run against real Postgres. Do not mock the database, and never weaken or delete a test to make
   it pass.
+- `fetch_url` must only reach public addresses. Keep the address check, the pinned connection and the
+  per-redirect check in `app/tools.py`; a URL that is blocked raises `NonRetryable`.
+- Mock is the default LLM provider, and tests and `scripts/demo.sh` use it. LLM implementations are
+  tested with fake clients, never against a live endpoint.
 - Keep it plain: no new abstractions or frameworks, no comments that restate the code.
 - Every log line is JSON with a `run_id` field (`app/log.py`); set `run_id_var` when entering run context.
 

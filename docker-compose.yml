@@ -9,6 +9,9 @@ x-app: &app
     LLM_PROVIDER: ${LLM_PROVIDER:-mock}
     ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     CLAUDE_MODEL: ${CLAUDE_MODEL:-claude-opus-5-5}
+    OPENAI_BASE_URL: ${OPENAI_BASE_URL:-http://ollama:11434/v1}
+    OPENAI_MODEL: ${OPENAI_MODEL:-qwen2.5:3b}
+    OPENAI_API_KEY: ${OPENAI_API_KEY:-ollama}
     MOCK_LLM_DELAY_SECONDS: ${MOCK_LLM_DELAY_SECONDS:-0}
     HEARTBEAT_INTERVAL_SECONDS: ${HEARTBEAT_INTERVAL_SECONDS:-10}
     HEARTBEAT_STALE_SECONDS: ${HEARTBEAT_STALE_SECONDS:-60}
@@ -69,6 +72,18 @@ services:
       - api1
       - api2
 
+  # Local model server, only started with: docker compose --profile local-llm up -d
+  ollama:
+    image: ollama/ollama
+    profiles: ["local-llm"]
+    volumes:
+      - ollama:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   tests:
     <<: *app
     profiles: ["test"]
@@ -78,3 +93,4 @@ services:
 
 volumes:
   pgdata:
+  ollama:

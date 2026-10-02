@@ -60,4 +60,8 @@ def build_llm() -> LLM:
         from app.llm_claude import ClaudeLLM
 
         return ClaudeLLM()
+    if config.LLM_PROVIDER == "ollama":
+        from app.llm_openai import OpenAICompatibleLLM
+
+        return OpenAICompatibleLLM()
     raise ValueError(f"unknown LLM_PROVIDER: {config.LLM_PROVIDER}")

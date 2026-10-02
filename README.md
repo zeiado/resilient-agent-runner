@@ -18,7 +18,7 @@ flowchart LR
     api1 & api2 -->|enqueue job| redis[(Redis 7)]
     redis -->|job| worker[ARQ worker<br/>agent loop + reaper]
     worker -->|checkpoint each step,<br/>lease + heartbeat| pg
-    worker --> llm[LLM<br/>MockLLM or Claude]
+    worker --> llm[LLM<br/>MockLLM, Claude or Ollama]
     worker --> tools[tools<br/>fetch_url, summarize, send_email]
 ```
 
@@ -46,6 +46,21 @@ curl localhost:8080/health
 The default LLM is `MockLLM`, a fixed script (fetch_url → summarize → send_email → finish) that needs
 no API key. To use Claude, put `LLM_PROVIDER=claude` and `ANTHROPIC_API_KEY=...` in `.env`
 (see `.env.example`).
+
+## Running with a local model
+
+Ollama runs as a compose service under the `local-llm` profile, so nothing is installed on the host.
+The model (about 2 GB) is downloaded once into a named volume.
+
+```bash
+docker compose --profile local-llm up -d
+docker compose exec ollama ollama pull qwen2.5:3b
+LLM_PROVIDER=ollama docker compose up -d worker
+```
+
+The last command recreates the worker with the new setting (`docker compose restart` would keep the
+old environment). Putting `LLM_PROVIDER=ollama` in `.env` works too. `OPENAI_BASE_URL`, `OPENAI_MODEL`
+and `OPENAI_API_KEY` point the same provider at any other OpenAI-compatible endpoint, such as vLLM.
 
 ## Run state machine
 
