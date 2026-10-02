@@ -29,6 +29,7 @@ class RunOut(BaseModel):
     idempotency_key: str
     status: str
     error: str | None
+    result: str | None
     created_at: datetime
     updated_at: datetime
     steps: list[StepOut] = []

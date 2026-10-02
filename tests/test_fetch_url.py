@@ -103,7 +103,7 @@ async def test_public_url_is_fetched_from_the_checked_address(network):
 async def test_blocked_url_fails_the_run_on_the_first_attempt():
     class InternalFetchLLM:
         async def next_action(self, task, steps):
-            return Action("fetch_url", {"url": "http://10.0.0.5/admin"}) if not steps else Action(FINISH, {})
+            return Action("fetch_url", {"url": "http://10.0.0.5/admin"}) if not steps else Action(FINISH, {"result": "r"})
 
     run = await make_run()
     await execute_run(run.id, InternalFetchLLM(), {"fetch_url": Tool(run=fetch_url)})

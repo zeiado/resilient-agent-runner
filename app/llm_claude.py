@@ -3,12 +3,13 @@ import json
 import anthropic
 
 from app import config
-from app.llm import FINISH, Action
+from app.llm import NUDGE, Action, TextReply
 from app.models import RunStep
 
 SYSTEM = """You plan the steps of a task for a task runner. On each turn, call exactly one tool \
-that makes progress on the user's task. When the task is done, reply with a one-line final \
-message and no tool call. send_email is reviewed by a human before it is sent; call it normally."""
+that makes progress on the user's task. Never reply with plain text. Something has only been done \
+if a tool result above shows it. When every part of the task has been done, call finish. \
+send_email is reviewed by a human before it is sent; call it normally."""
 
 TOOLS = [
     {
@@ -48,6 +49,17 @@ TOOLS = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "finish",
+        "description": "End the run. Call this only when every part of the task has been done with the other tools.",
+        "strict": True,
+        "input_schema": {
+            "type": "object",
+            "properties": {"result": {"type": "string", "description": "Short summary of what was done."}},
+            "required": ["result"],
+            "additionalProperties": False,
+        },
+    },
 ]
 
 
@@ -82,17 +94,21 @@ class ClaudeLLM:
             raise RuntimeError(f"claude stopped with {response.stop_reason}")
         return response
 
-    async def next_action(self, task: str, steps: list[RunStep]) -> Action:
+    async def next_action(self, task: str, steps: list[RunStep], nudge_reply: str | None = None) -> Action | TextReply:
+        messages = build_messages(task, steps)
+        if nudge_reply is not None:
+            messages.append({"role": "assistant", "content": nudge_reply or "(empty reply)"})
+            messages.append({"role": "user", "content": NUDGE})
         response = await self._create(
             system=SYSTEM,
             tools=TOOLS,
             tool_choice={"type": "auto", "disable_parallel_tool_use": True},
-            messages=build_messages(task, steps),
+            messages=messages,
         )
         for block in response.content:
             if block.type == "tool_use":
                 return Action(block.name, dict(block.input))
-        return Action(FINISH, {})
+        return TextReply("".join(block.text for block in response.content if block.type == "text"))
 
     async def complete(self, prompt: str) -> str:
         response = await self._create(messages=[{"role": "user", "content": prompt}])

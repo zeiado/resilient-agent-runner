@@ -3,7 +3,7 @@ import json
 from openai import AsyncOpenAI
 
 from app import config
-from app.llm import FINISH, Action
+from app.llm import NUDGE, Action, TextReply
 from app.llm_claude import SYSTEM, TOOLS
 from app.models import RunStep
 
@@ -49,12 +49,16 @@ class OpenAICompatibleLLM:
             raise RuntimeError("model stopped with length")
         return choice.message
 
-    async def next_action(self, task: str, steps: list[RunStep]) -> Action:
-        message = await self._create(messages=build_messages(task, steps), tools=FUNCTIONS)
+    async def next_action(self, task: str, steps: list[RunStep], nudge_reply: str | None = None) -> Action | TextReply:
+        messages = build_messages(task, steps)
+        if nudge_reply is not None:
+            messages.append({"role": "assistant", "content": nudge_reply})
+            messages.append({"role": "user", "content": NUDGE})
+        message = await self._create(messages=messages, tools=FUNCTIONS)
         if message.tool_calls:
             call = message.tool_calls[0].function
             return Action(call.name, json.loads(call.arguments))
-        return Action(FINISH, {})
+        return TextReply(message.content or "")
 
     async def complete(self, prompt: str) -> str:
         message = await self._create(messages=[{"role": "user", "content": prompt}])

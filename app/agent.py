@@ -8,7 +8,7 @@ from sqlalchemy import and_, func, or_, select, update
 
 from app import config
 from app.db import Session
-from app.llm import FINISH, LLM
+from app.llm import FINISH, LLM, TextReply
 from app.log import run_id_var
 from app.models import Run, RunStep
 from app.tools import NonRetryable, Tool
@@ -68,10 +68,13 @@ async def owned_run(run_id: uuid.UUID, worker_id: str):
         yield session, run
 
 
-async def finish_run(run_id: uuid.UUID, worker_id: str, status: str, error: str | None = None) -> None:
+async def finish_run(
+    run_id: uuid.UUID, worker_id: str, status: str, error: str | None = None, result: str | None = None
+) -> None:
     async with owned_run(run_id, worker_id) as (_, run):
         run.status = status
         run.error = error
+        run.result = result
         run.lease_owner = None
     log.info("run %s%s", status, f": {error}" if error else "")
 
@@ -107,11 +110,20 @@ async def agent_loop(run_id: uuid.UUID, worker_id: str, llm: LLM, tools: dict[st
                 return
             try:
                 action = await llm.next_action(run.task, steps)
+                if isinstance(action, TextReply):
+                    # One in-memory correction. It is not checkpointed, so it is never a step,
+                    # and a resumed run simply makes this decision again from the saved steps.
+                    log.warning("model replied without a tool call, asking once more")
+                    action = await llm.next_action(run.task, steps, nudge_reply=action.text)
             except Exception as exc:
                 await finish_run(run_id, worker_id, "failed", f"llm error: {type(exc).__name__}: {exc}")
                 return
+            if isinstance(action, TextReply):
+                error = f"model replied without a tool call: {action.text[:200]}"
+                await finish_run(run_id, worker_id, "failed", error)
+                return
             if action.tool == FINISH:
-                await finish_run(run_id, worker_id, "completed")
+                await finish_run(run_id, worker_id, "completed", result=str(action.input.get("result", "")))
                 return
             if action.tool not in tools:
                 await finish_run(run_id, worker_id, "failed", f"llm chose unknown tool: {action.tool}")

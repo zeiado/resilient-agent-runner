@@ -37,7 +37,7 @@ class ScriptedLLM:
     async def next_action(self, task, steps) -> Action:
         if len(steps) < len(self.tool_names):
             return Action(self.tool_names[len(steps)], {"n": len(steps) + 1})
-        return Action(FINISH, {})
+        return Action(FINISH, {"result": "all done"})
 
     async def complete(self, prompt: str) -> str:
         return "summary"

@@ -44,7 +44,8 @@ curl localhost:8080/health
 ```
 
 The default LLM is `MockLLM`, a fixed script (fetch_url → summarize → send_email → finish) that needs
-no API key. To use Claude, put `LLM_PROVIDER=claude` and `ANTHROPIC_API_KEY=...` in `.env`
+no API key. A run ends only when the model calls the `finish` tool; its `result` argument is stored on
+the run and returned by `GET /runs/{id}`. To use Claude, put `LLM_PROVIDER=claude` and `ANTHROPIC_API_KEY=...` in `.env`
 (see `.env.example`).
 
 ## Running with a local model
@@ -72,8 +73,8 @@ stateDiagram-v2
     running --> awaiting_approval: next tool is send_email
     awaiting_approval --> queued: POST /approve
     awaiting_approval --> rejected: POST /reject
-    running --> completed: LLM returns finish
-    running --> failed: 3 failed attempts, step limit (10), or LLM error
+    running --> completed: LLM calls the finish tool
+    running --> failed: 3 failed attempts, step limit (10), no tool call twice, or LLM error
     completed --> [*]
     failed --> [*]
     rejected --> [*]
@@ -106,7 +107,8 @@ A step that was in flight when the worker died is executed again (at-least-once)
 | Tool fails twice, then works | Retried with exponential backoff; run completes with `attempts = 3` | `test_agent.py::test_tool_fails_twice_then_succeeds` |
 | Tool fails every time | After 3 attempts the step and run are `failed`, error saved, later steps never run | `test_agent.py::test_tool_fails_permanently` |
 | Tool call hangs | Cancelled at the timeout (30 s) and treated as a failed attempt | `test_agent.py::test_tool_call_times_out` |
-| LLM never returns `finish` | Run is `failed` after 10 steps | `test_agent.py::test_looping_llm_stops_at_step_limit` |
+| Model claims completion without calling a tool ("Sent the email." as plain text) | Only a `finish` tool call completes a run. A plain-text reply gets one corrective message; a second one fails the run with `model replied without a tool call: <text>`. The correction is not a step and is not checkpointed | `test_finish.py`: `test_text_reply_once_is_corrected_and_the_run_recovers`, `test_text_reply_twice_fails_the_run_with_the_text_saved`, `test_resume_after_crash_with_text_replies_and_finish` |
+| LLM never calls `finish` | Run is `failed` after 10 steps | `test_agent.py::test_looping_llm_stops_at_step_limit` |
 | Worker dies after step 2 | Run stays `running` until the heartbeat is stale, then resumes at step 3; steps 1 and 2 are each called once | `test_recovery.py::test_resume_after_crash_does_not_rerun_completed_steps`, and `scripts/demo.sh` with a real `SIGKILL` |
 | 8 workers try to claim the same run | Exactly one wins | `test_recovery.py::test_only_one_worker_can_claim_a_run` |
 | Worker stalls, another takes over, the first wakes up | The first worker's write is refused; no step output, no email | `test_recovery.py::test_worker_that_lost_its_lease_cannot_write` |

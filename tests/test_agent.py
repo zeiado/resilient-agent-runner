@@ -28,6 +28,7 @@ async def test_full_run_with_mock_llm_completes():
     steps = await get_steps(run.id)
     assert run.status == "completed"
     assert run.error is None
+    assert run.result == "Fetched https://example.com/a, summarized it and emailed the summary."
     assert [(s.step_no, s.tool, s.status, s.attempts) for s in steps] == [
         (1, "fetch_url", "completed", 1),
         (2, "summarize", "completed", 1),

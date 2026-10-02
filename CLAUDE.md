@@ -51,6 +51,8 @@ The `tests` service mounts the working tree, so tests see code changes without a
   per-redirect check in `app/tools.py`; a URL that is blocked raises `NonRetryable`.
 - Mock is the default LLM provider, and tests and `scripts/demo.sh` use it. LLM implementations are
   tested with fake clients, never against a live endpoint.
+- Only a `finish` tool call completes a run. A plain-text model reply is a `TextReply`: one in-memory
+  nudge, then the run fails. Never treat "no tool call" as done, and never checkpoint the nudge.
 - Keep it plain: no new abstractions or frameworks, no comments that restate the code.
 - Every log line is JSON with a `run_id` field (`app/log.py`); set `run_id_var` when entering run context.
 

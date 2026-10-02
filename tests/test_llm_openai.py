@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.llm import FINISH, Action
+from app.llm import FINISH, NUDGE, Action, TextReply
 from app.llm_openai import OpenAICompatibleLLM
 from app.models import RunStep
 
@@ -49,13 +49,28 @@ async def test_tool_call_becomes_action_and_history_is_rebuilt_from_steps():
         {"role": "tool", "tool_call_id": "step_1", "content": '{"content": "page"}'},
     ]
     assert client.request["messages"][0]["role"] == "system"
-    assert [t["function"]["name"] for t in client.request["tools"]] == ["fetch_url", "summarize", "send_email"]
+    assert [t["function"]["name"] for t in client.request["tools"]] == ["fetch_url", "summarize", "send_email", "finish"]
     assert client.request["tools"][0]["function"]["parameters"]["required"] == ["url"]
 
 
-async def test_reply_without_tool_call_means_finish():
-    client = FakeClient(SimpleNamespace(content="Done.", tool_calls=None), "stop")
-    assert await OpenAICompatibleLLM(client, model="m").next_action("t", []) == Action(FINISH, {})
+async def test_finish_tool_call_ends_the_run():
+    client = FakeClient(SimpleNamespace(content="", tool_calls=[tool_call("finish", '{"result": "emailed it"}')]), "tool_calls")
+    assert await OpenAICompatibleLLM(client, model="m").next_action("t", []) == Action(FINISH, {"result": "emailed it"})
+
+
+async def test_plain_text_reply_is_not_a_finish():
+    client = FakeClient(SimpleNamespace(content="Sent the email.", tool_calls=None), "stop")
+    assert await OpenAICompatibleLLM(client, model="m").next_action("t", []) == TextReply("Sent the email.")
+
+
+async def test_nudge_replays_the_text_reply_and_the_correction():
+    client = FakeClient(SimpleNamespace(content="", tool_calls=[tool_call("finish", '{"result": "r"}')]), "tool_calls")
+    await OpenAICompatibleLLM(client, model="m").next_action("t", [], nudge_reply="Sent the email.")
+    assert client.request["messages"][1:] == [
+        {"role": "user", "content": "t"},
+        {"role": "assistant", "content": "Sent the email."},
+        {"role": "user", "content": NUDGE},
+    ]
 
 
 async def test_truncated_reply_raises():

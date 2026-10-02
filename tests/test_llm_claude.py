@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.llm import FINISH, Action
+from app.llm import FINISH, NUDGE, Action, TextReply
 from app.llm_claude import ClaudeLLM
 from app.models import RunStep
 
@@ -43,14 +43,30 @@ async def test_tool_use_block_becomes_action_and_history_is_rebuilt_from_steps()
             "content": [{"type": "tool_result", "tool_use_id": "step_1", "content": '{"content": "page"}'}],
         },
     ]
-    assert {t["name"] for t in client.request["tools"]} == {"fetch_url", "summarize", "send_email"}
+    assert {t["name"] for t in client.request["tools"]} == {"fetch_url", "summarize", "send_email", "finish"}
     assert "betas" not in client.request
     assert "fallbacks" not in client.request
 
 
-async def test_reply_without_tool_call_means_finish():
+async def test_finish_tool_call_ends_the_run():
+    client = FakeClient([SimpleNamespace(type="tool_use", name="finish", input={"result": "emailed it"})], "tool_use")
+    assert await ClaudeLLM(client, model="m").next_action("t", []) == Action(FINISH, {"result": "emailed it"})
+    assert "finish" in {t["name"] for t in client.request["tools"]}
+
+
+async def test_plain_text_reply_is_not_a_finish():
     client = FakeClient([SimpleNamespace(type="text", text="Done.")], "end_turn")
-    assert await ClaudeLLM(client, model="m").next_action("t", []) == Action(FINISH, {})
+    assert await ClaudeLLM(client, model="m").next_action("t", []) == TextReply("Done.")
+
+
+async def test_nudge_replays_the_text_reply_and_the_correction():
+    client = FakeClient([SimpleNamespace(type="tool_use", name="finish", input={"result": "r"})], "tool_use")
+    await ClaudeLLM(client, model="m").next_action("t", [], nudge_reply="Done.")
+    assert client.request["messages"] == [
+        {"role": "user", "content": "t"},
+        {"role": "assistant", "content": "Done."},
+        {"role": "user", "content": NUDGE},
+    ]
 
 
 @pytest.mark.parametrize("stop_reason", ["refusal", "max_tokens"])
