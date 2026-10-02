@@ -72,13 +72,10 @@ class ClaudeLLM:
         self.model = model
 
     async def _create(self, **kwargs):
-        response = await self.client.beta.messages.create(
+        response = await self.client.messages.create(
             model=self.model,
             max_tokens=16000,
             output_config={"effort": "medium"},
-            # If the model's safety classifier declines, the API reruns the request on a fallback model.
-            betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default",
             **kwargs,
         )
         if response.stop_reason in ("refusal", "max_tokens"):

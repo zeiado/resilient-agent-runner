@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from app.llm import FINISH, Action
 from app.llm_claude import ClaudeLLM
 from app.models import RunStep
@@ -10,7 +12,7 @@ class FakeClient:
 
     def __init__(self, content, stop_reason):
         self.response = SimpleNamespace(content=content, stop_reason=stop_reason)
-        self.beta = SimpleNamespace(messages=SimpleNamespace(create=self.create))
+        self.messages = SimpleNamespace(create=self.create)
 
     async def create(self, **kwargs):
         self.request = kwargs
@@ -42,8 +44,17 @@ async def test_tool_use_block_becomes_action_and_history_is_rebuilt_from_steps()
         },
     ]
     assert {t["name"] for t in client.request["tools"]} == {"fetch_url", "summarize", "send_email"}
+    assert "betas" not in client.request
+    assert "fallbacks" not in client.request
 
 
 async def test_reply_without_tool_call_means_finish():
     client = FakeClient([SimpleNamespace(type="text", text="Done.")], "end_turn")
     assert await ClaudeLLM(client, model="m").next_action("t", []) == Action(FINISH, {})
+
+
+@pytest.mark.parametrize("stop_reason", ["refusal", "max_tokens"])
+async def test_refusal_and_truncation_raise(stop_reason):
+    client = FakeClient([], stop_reason)
+    with pytest.raises(RuntimeError, match=stop_reason):
+        await ClaudeLLM(client, model="m").next_action("t", [])
