@@ -1,0 +1,68 @@
+name: resilient-agent-runner
+
+x-app: &app
+  build: .
+  environment:
+    DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-runner}:${POSTGRES_PASSWORD:-runner}@postgres:5432/${POSTGRES_DB:-runner}
+    REDIS_URL: redis://redis:6379/0
+    LLM_PROVIDER: ${LLM_PROVIDER:-mock}
+    ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    CLAUDE_MODEL: ${CLAUDE_MODEL:-claude-opus-5-5}
+    MOCK_TOOL_DELAY_SECONDS: ${MOCK_TOOL_DELAY_SECONDS:-0}
+    HEARTBEAT_INTERVAL_SECONDS: ${HEARTBEAT_INTERVAL_SECONDS:-10}
+    HEARTBEAT_STALE_SECONDS: ${HEARTBEAT_STALE_SECONDS:-60}
+    REAPER_INTERVAL_SECONDS: ${REAPER_INTERVAL_SECONDS:-30}
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-runner}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-runner}
+      POSTGRES_DB: ${POSTGRES_DB:-runner}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER:-runner} -d ${POSTGRES_DB:-runner}"]
+      interval: 2s
+      timeout: 3s
+      retries: 90
+
+  redis:
+    image: redis:7
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  api1:
+    <<: *app
+
+  api2:
+    <<: *app
+
+  nginx:
+    image: nginx:1.27
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "8080:80"
+    depends_on:
+      - api1
+      - api2
+
+  tests:
+    <<: *app
+    profiles: ["test"]
+    volumes:
+      - .:/app
+    command: pytest -q
+
+volumes:
+  pgdata:
