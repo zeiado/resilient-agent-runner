@@ -1,10 +1,13 @@
+import asyncio
+
 from dataclasses import replace
 
+from app import config
 from app.agent import execute_run
 from app.llm import Action, MockLLM
 from app.tools import Tool, build_tools
 
-from tests.helpers import CountingTool, get_outbox, get_run, get_steps, make_run
+from tests.helpers import CountingTool, ScriptedLLM, get_outbox, get_run, get_steps, make_run
 
 
 async def fake_fetch(input: dict) -> dict:
@@ -52,3 +55,51 @@ async def test_looping_llm_stops_at_step_limit():
     assert "step limit of 10" in run.error
     assert len(await get_steps(run.id)) == 10
     assert counter.calls == 10
+
+
+async def test_tool_fails_twice_then_succeeds():
+    flaky = CountingTool(fail_times=2)
+    run = await make_run()
+
+    await execute_run(run.id, ScriptedLLM(["flaky"]), {"flaky": flaky.tool()})
+
+    run = await get_run(run.id)
+    (step,) = await get_steps(run.id)
+    assert run.status == "completed"
+    assert step.status == "completed"
+    assert step.attempts == 3
+    assert step.error is None
+    assert flaky.calls == 3
+
+
+async def test_tool_fails_permanently():
+    broken = CountingTool(fail_times=99)
+    after = CountingTool()
+    run = await make_run()
+
+    await execute_run(run.id, ScriptedLLM(["broken", "after"]), {"broken": broken.tool(), "after": after.tool()})
+
+    run = await get_run(run.id)
+    (step,) = await get_steps(run.id)
+    assert run.status == "failed"
+    assert "step 1 (broken) failed after 3 attempts" in run.error
+    assert "boom 3" in run.error
+    assert step.status == "failed"
+    assert step.attempts == 3
+    assert step.error == "RuntimeError: boom 3"
+    assert broken.calls == 3
+    assert after.calls == 0
+
+
+async def test_tool_call_times_out(monkeypatch):
+    monkeypatch.setattr(config, "TOOL_TIMEOUT_SECONDS", 0.05)
+
+    async def hang(input: dict) -> dict:
+        await asyncio.sleep(5)
+
+    run = await make_run()
+    await execute_run(run.id, ScriptedLLM(["hang"]), {"hang": Tool(run=hang)})
+
+    run = await get_run(run.id)
+    assert run.status == "failed"
+    assert "TimeoutError" in run.error

@@ -4,6 +4,7 @@ import os
 ADMIN_URL = os.environ["DATABASE_URL"]
 TEST_URL = ADMIN_URL.rsplit("/", 1)[0] + "/runner_test"
 os.environ["DATABASE_URL"] = TEST_URL
+os.environ["RETRY_BACKOFF_SECONDS"] = "0"
 # Separate Redis DB so a running dev worker never sees jobs enqueued by tests.
 os.environ["REDIS_URL"] = os.environ["REDIS_URL"].rsplit("/", 1)[0] + "/1"
 

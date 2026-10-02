@@ -102,34 +102,46 @@ async def agent_loop(run_id: uuid.UUID, worker_id: str, llm: LLM, tools: dict[st
 
 
 async def execute_step(run_id: uuid.UUID, worker_id: str, step: RunStep, tool: Tool) -> bool:
-    """Run one step to completion. Returns False if the run was marked failed."""
-    async with owned_run(run_id, worker_id) as (session, _):
-        await session.execute(update(RunStep).where(RunStep.id == step.id).values(attempts=RunStep.attempts + 1))
+    """Run one step to completion, retrying failures. Returns False if the run was marked failed."""
+    attempts = step.attempts
+    error = "worker crashed during every attempt"
 
-    try:
-        output = await asyncio.wait_for(tool.run(step.input), config.TOOL_TIMEOUT_SECONDS)
-    except Exception as exc:
-        error = f"{type(exc).__name__}: {exc}"
-        async with owned_run(run_id, worker_id) as (session, run):
+    while attempts < config.MAX_ATTEMPTS:
+        # Count the attempt before making it, so a crash mid-attempt still uses one up.
+        async with owned_run(run_id, worker_id) as (session, _):
+            attempts = await session.scalar(
+                update(RunStep).where(RunStep.id == step.id).values(attempts=RunStep.attempts + 1).returning(RunStep.attempts)
+            )
+
+        try:
+            output = await asyncio.wait_for(tool.run(step.input), config.TOOL_TIMEOUT_SECONDS)
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            log.warning("step %d attempt %d/%d failed: %s", step.step_no, attempts, config.MAX_ATTEMPTS, error)
+            if attempts < config.MAX_ATTEMPTS:
+                await asyncio.sleep(config.RETRY_BACKOFF_SECONDS * 2 ** (attempts - 1))
+            continue
+
+        # The side effect and the "completed" mark commit together or not at all.
+        async with owned_run(run_id, worker_id) as (session, _):
+            if tool.commit:
+                await tool.commit(session, step, output)
             await session.execute(
                 update(RunStep)
                 .where(RunStep.id == step.id)
-                .values(status="failed", error=error, finished_at=datetime.now(timezone.utc))
+                .values(status="completed", output=output, error=None, finished_at=datetime.now(timezone.utc))
             )
-            run.status = "failed"
-            run.error = f"step {step.step_no} ({step.tool}) failed: {error}"
-            run.lease_owner = None
-        log.error("step %d failed: %s", step.step_no, error)
-        return False
+        log.info("step %d completed: %s (attempt %d)", step.step_no, step.tool, attempts)
+        return True
 
-    # The side effect and the "completed" mark commit together or not at all.
-    async with owned_run(run_id, worker_id) as (session, _):
-        if tool.commit:
-            await tool.commit(session, step, output)
+    async with owned_run(run_id, worker_id) as (session, run):
         await session.execute(
             update(RunStep)
             .where(RunStep.id == step.id)
-            .values(status="completed", output=output, finished_at=datetime.now(timezone.utc))
+            .values(status="failed", error=error, finished_at=datetime.now(timezone.utc))
         )
-    log.info("step %d completed: %s", step.step_no, step.tool)
-    return True
+        run.status = "failed"
+        run.error = f"step {step.step_no} ({step.tool}) failed after {attempts} attempts: {error}"
+        run.lease_owner = None
+    log.error("run failed: %s", run.error)
+    return False
