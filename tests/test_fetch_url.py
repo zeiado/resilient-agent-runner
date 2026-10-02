@@ -113,3 +113,19 @@ async def test_blocked_url_fails_the_run_on_the_first_attempt():
     assert run.status == "failed"
     assert "blocked: private address" in run.error
     assert (step.status, step.attempts, step.error) == ("failed", 1, "BlockedURL: blocked: private address")
+
+
+async def test_html_is_reduced_to_visible_text_before_truncating(network):
+    routes, _ = network
+    page = (
+        "<!doctype html><html><head><title>Example Domain</title>"
+        "<style>body{font:16px sans-serif}" + "x" * 3000 + "</style>"
+        "<script>var tracking = 1;</script></head>"
+        "<body><h1>Hello</h1>\n\n<p>This domain is for   use in examples &amp; docs.</p>"
+        "<a href=/more>Learn more</a></body></html>"
+    )
+    routes["public.example/page"] = httpx.Response(200, html=page)
+
+    result = await fetch_url({"url": "http://public.example/page"})
+
+    assert result["content"] == "Example Domain Hello This domain is for use in examples & docs. Learn more"

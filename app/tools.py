@@ -2,6 +2,7 @@ import asyncio
 import ipaddress
 import socket
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from typing import Awaitable, Callable
 
 import httpx
@@ -59,6 +60,34 @@ async def public_address(url: httpx.URL) -> str:
     return addresses[0]
 
 
+class TextExtractor(HTMLParser):
+    """Collects the visible text of an HTML page, skipping scripts and styles."""
+
+    def __init__(self):
+        super().__init__()
+        self.parts: list[str] = []
+        self.skipping = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("script", "style"):
+            self.skipping += 1
+
+    def handle_endtag(self, tag):
+        if tag in ("script", "style") and self.skipping:
+            self.skipping -= 1
+
+    def handle_data(self, data):
+        if not self.skipping:
+            self.parts.append(data)
+
+
+def html_to_text(html: str) -> str:
+    extractor = TextExtractor()
+    extractor.feed(html)
+    extractor.close()
+    return " ".join(" ".join(extractor.parts).split())
+
+
 async def fetch_url(input: dict) -> dict:
     url = httpx.URL(input["url"])
     async with httpx.AsyncClient(
@@ -77,7 +106,9 @@ async def fetch_url(input: dict) -> dict:
                 url = url.join(resp.headers["location"])
                 continue
             resp.raise_for_status()
-            return {"status_code": resp.status_code, "content": resp.text[:2000]}
+            is_html = "html" in resp.headers.get("content-type", "")
+            content = html_to_text(resp.text) if is_html else resp.text
+            return {"status_code": resp.status_code, "content": content[:2000]}
     raise RuntimeError(f"too many redirects (max {MAX_REDIRECTS})")
 
 
