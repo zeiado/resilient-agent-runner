@@ -92,10 +92,23 @@ async def agent_loop(run_id: uuid.UUID, worker_id: str, llm: LLM, tools: dict[st
                 await finish_run(run_id, worker_id, "failed", f"llm chose unknown tool: {action.tool}")
                 return
 
-            async with owned_run(run_id, worker_id) as (session, _):
-                step = RunStep(run_id=run_id, step_no=len(steps) + 1, tool=action.tool, input=action.input, status="pending")
+            needs_approval = tools[action.tool].needs_approval
+            async with owned_run(run_id, worker_id) as (session, owned):
+                step = RunStep(
+                    run_id=run_id,
+                    step_no=len(steps) + 1,
+                    tool=action.tool,
+                    input=action.input,
+                    status="awaiting_approval" if needs_approval else "pending",
+                )
                 session.add(step)
+                if needs_approval:
+                    owned.status = "awaiting_approval"
+                    owned.lease_owner = None
             log.info("step %d checkpointed: %s", step.step_no, step.tool)
+            if needs_approval:
+                log.info("run paused, waiting for human approval of step %d", step.step_no)
+                return
 
         if not await execute_step(run_id, worker_id, step, tools[step.tool]):
             return

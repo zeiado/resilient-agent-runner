@@ -3,7 +3,7 @@ import uuid
 
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import JSONResponse
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert
 
 from app.db import Session
@@ -84,5 +84,44 @@ async def create_run(body: RunCreate, response: Response):
 @app.get("/runs/{run_id}", response_model=RunOut)
 async def get_run(run_id: uuid.UUID):
     run_id_var.set(str(run_id))
+    async with Session() as session:
+        return await load_run(session, run_id)
+
+
+async def decide(run_id: uuid.UUID, run_status: str, step_status: str) -> None:
+    """Move a run out of awaiting_approval. The conditional UPDATE lets exactly one decision win."""
+    async with Session() as session, session.begin():
+        if await session.get(Run, run_id) is None:
+            raise HTTPException(404, "run not found")
+        decided = await session.scalar(
+            update(Run)
+            .where(Run.id == run_id, Run.status == "awaiting_approval")
+            .values(status=run_status)
+            .returning(Run.id)
+        )
+        if decided is None:
+            raise HTTPException(409, "run is not awaiting approval")
+        await session.execute(
+            update(RunStep)
+            .where(RunStep.run_id == run_id, RunStep.status == "awaiting_approval")
+            .values(status=step_status)
+        )
+
+
+@app.post("/runs/{run_id}/approve", response_model=RunOut)
+async def approve_run(run_id: uuid.UUID):
+    run_id_var.set(str(run_id))
+    await decide(run_id, run_status="queued", step_status="pending")
+    await enqueue_or_leave_for_reaper(run_id)
+    log.info("run approved")
+    async with Session() as session:
+        return await load_run(session, run_id)
+
+
+@app.post("/runs/{run_id}/reject", response_model=RunOut)
+async def reject_run(run_id: uuid.UUID):
+    run_id_var.set(str(run_id))
+    await decide(run_id, run_status="rejected", step_status="rejected")
+    log.info("run rejected")
     async with Session() as session:
         return await load_run(session, run_id)
