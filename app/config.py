@@ -15,4 +15,4 @@ REAPER_INTERVAL_SECONDS = int(os.environ.get("REAPER_INTERVAL_SECONDS", "30"))
 # "mock" needs no API key; "claude" reads ANTHROPIC_API_KEY from the environment
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "mock")
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-opus-5-5")
-MOCK_TOOL_DELAY_SECONDS = float(os.environ.get("MOCK_TOOL_DELAY_SECONDS", "0"))
+MOCK_LLM_DELAY_SECONDS = float(os.environ.get("MOCK_LLM_DELAY_SECONDS", "0"))
