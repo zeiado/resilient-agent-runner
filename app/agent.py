@@ -2,9 +2,9 @@ import asyncio
 import logging
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, func, or_, select, update
 
 from app import config
 from app.db import Session
@@ -21,15 +21,37 @@ class LeaseLost(Exception):
 
 
 async def claim(run_id: uuid.UUID, worker_id: str) -> bool:
-    """Atomically take ownership of a queued run. Only one caller can win."""
+    """Atomically take the lease on a run that is queued, or running with a stale heartbeat.
+
+    Concurrent callers serialize on the row lock; the loser re-checks the WHERE clause
+    against the winner's fresh heartbeat and gets no row.
+    """
+    stale = func.now() - timedelta(seconds=config.HEARTBEAT_STALE_SECONDS)
     async with Session() as session, session.begin():
         claimed = await session.scalar(
             update(Run)
-            .where(Run.id == run_id, Run.status == "queued")
-            .values(status="running", lease_owner=worker_id)
+            .where(
+                Run.id == run_id,
+                or_(Run.status == "queued", and_(Run.status == "running", Run.heartbeat_at < stale)),
+            )
+            .values(status="running", lease_owner=worker_id, heartbeat_at=func.now())
             .returning(Run.id)
         )
     return claimed is not None
+
+
+async def heartbeat_loop(run_id: uuid.UUID, worker_id: str) -> None:
+    while True:
+        await asyncio.sleep(config.HEARTBEAT_INTERVAL_SECONDS)
+        try:
+            async with Session() as session, session.begin():
+                await session.execute(
+                    update(Run)
+                    .where(Run.id == run_id, Run.lease_owner == worker_id, Run.status == "running")
+                    .values(heartbeat_at=func.now())
+                )
+        except Exception:
+            log.exception("heartbeat failed")
 
 
 @asynccontextmanager
@@ -61,10 +83,13 @@ async def execute_run(run_id: uuid.UUID, llm: LLM, tools: dict[str, Tool], worke
         log.info("run is not claimable, skipping")
         return
     log.info("run claimed by worker %s", worker_id)
+    heartbeat = asyncio.create_task(heartbeat_loop(run_id, worker_id))
     try:
         await agent_loop(run_id, worker_id, llm, tools)
     except LeaseLost:
         log.warning("lease lost, stopping without writing")
+    finally:
+        heartbeat.cancel()
 
 
 async def agent_loop(run_id: uuid.UUID, worker_id: str, llm: LLM, tools: dict[str, Tool]) -> None:
