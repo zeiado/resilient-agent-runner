@@ -2,6 +2,7 @@ name: resilient-agent-runner
 
 x-app: &app
   build: .
+  image: resilient-agent-runner
   environment:
     DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-runner}:${POSTGRES_PASSWORD:-runner}@postgres:5432/${POSTGRES_DB:-runner}
     REDIS_URL: redis://redis:6379/0
