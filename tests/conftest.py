@@ -5,11 +5,14 @@ ADMIN_URL = os.environ["DATABASE_URL"]
 TEST_URL = ADMIN_URL.rsplit("/", 1)[0] + "/runner_test"
 os.environ["DATABASE_URL"] = TEST_URL
 
+import subprocess
+
 import httpx
 import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from app.db import engine
 from app.main import app
 
 
@@ -21,6 +24,21 @@ async def test_database():
         if not exists:
             await conn.execute(text("CREATE DATABASE runner_test"))
     await admin.dispose()
+
+    # Build the schema from the real migration so the migration itself is under test.
+    test = create_async_engine(TEST_URL, isolation_level="AUTOCOMMIT")
+    async with test.connect() as conn:
+        await conn.execute(text("DROP SCHEMA public CASCADE"))
+        await conn.execute(text("CREATE SCHEMA public"))
+    await test.dispose()
+    subprocess.run(["alembic", "upgrade", "head"], check=True)
+    yield
+
+
+@pytest.fixture(autouse=True)
+async def clean_tables():
+    async with engine.begin() as conn:
+        await conn.execute(text("TRUNCATE runs, run_steps, outbox RESTART IDENTITY CASCADE"))
     yield
 
 

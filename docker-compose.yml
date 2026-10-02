@@ -41,11 +41,18 @@ services:
       timeout: 3s
       retries: 20
 
-  api1:
+  migrate:
     <<: *app
+    command: alembic upgrade head
+
+  api1: &api
+    <<: *app
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
 
   api2:
-    <<: *app
+    <<: *api
 
   nginx:
     image: nginx:1.27
