@@ -5,8 +5,8 @@ from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, Te
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-RUN_STATUSES = ("queued", "running", "awaiting_approval", "completed", "failed", "rejected")
-STEP_STATUSES = ("pending", "awaiting_approval", "completed", "failed", "rejected")
+RUN_STATUSES = ("queued", "running", "awaiting_approval", "completed", "failed", "rejected", "cancelled")
+STEP_STATUSES = ("pending", "awaiting_approval", "completed", "failed", "rejected", "cancelled")
 
 
 def _in(column: str, values: tuple[str, ...]) -> str:
@@ -30,6 +30,9 @@ class Run(Base):
     status: Mapped[str] = mapped_column(Text, default="queued")
     error: Mapped[str | None] = mapped_column(Text)
     result: Mapped[str | None] = mapped_column(Text)
+    # LLM tokens spent on planning decisions; the run fails once it would go over max_tokens.
+    max_tokens: Mapped[int | None] = mapped_column(Integer)
+    tokens_used: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     lease_owner: Mapped[str | None] = mapped_column(Text)
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -51,6 +54,7 @@ class RunStep(Base):
     output: Mapped[dict | None] = mapped_column(JSONB)
     status: Mapped[str] = mapped_column(Text, default="pending")
     attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    tokens: Mapped[int | None] = mapped_column(Integer)
     error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

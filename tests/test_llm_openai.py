@@ -83,3 +83,9 @@ async def test_complete_returns_text():
     client = FakeClient(SimpleNamespace(content="a summary", tool_calls=None), "stop")
     assert await OpenAICompatibleLLM(client, model="m").complete("Summarize: x") == "a summary"
     assert "tools" not in client.request
+
+
+async def test_reported_usage_becomes_the_decision_tokens():
+    client = FakeClient(SimpleNamespace(content="", tool_calls=[tool_call("finish", '{"result": "r"}')]), "tool_calls")
+    client.response.usage = SimpleNamespace(total_tokens=321)
+    assert (await OpenAICompatibleLLM(client, model="m").next_action("t", [])).tokens == 321

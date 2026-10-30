@@ -1,7 +1,7 @@
 import asyncio
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from app import config
@@ -15,6 +15,8 @@ NUDGE = "You must call a tool. If the task is fully done, call finish."
 class Action:
     tool: str
     input: dict
+    # Tokens the provider reported for the call that produced this decision.
+    tokens: int = field(default=0, compare=False)
 
 
 @dataclass
@@ -22,6 +24,7 @@ class TextReply:
     """The model answered in plain text instead of calling a tool."""
 
     text: str
+    tokens: int = field(default=0, compare=False)
 
 
 class LLM(Protocol):
@@ -29,7 +32,8 @@ class LLM(Protocol):
         """Pick the next tool given the task and the completed steps; FINISH ends the run.
 
         nudge_reply is the model's previous plain-text answer to this same decision. When set,
-        the provider replays it followed by NUDGE and asks again.
+        the provider replays it followed by NUDGE and asks again. The result carries the tokens
+        the call used, which count against the run's budget.
         """
 
     async def complete(self, prompt: str) -> str:
@@ -37,7 +41,9 @@ class LLM(Protocol):
 
 
 class MockLLM:
-    """Deterministic script: fetch_url -> summarize -> send_email -> finish."""
+    """Deterministic script: fetch_url -> summarize -> send_email -> finish. Each decision costs TOKENS."""
+
+    TOKENS = 100
 
     def __init__(self, delay: float = 0):
         self.delay = delay
@@ -48,15 +54,16 @@ class MockLLM:
         url = url.group(0) if url else "https://example.com"
 
         if len(steps) == 0:
-            return Action("fetch_url", {"url": url})
+            return Action("fetch_url", {"url": url}, self.TOKENS)
         if len(steps) == 1:
-            return Action("summarize", {"text": steps[0].output["content"]})
+            return Action("summarize", {"text": steps[0].output["content"]}, self.TOKENS)
         if len(steps) == 2:
             return Action(
                 "send_email",
                 {"recipient": "demo@example.com", "subject": f"Summary of {url}", "body": steps[1].output["summary"]},
+                self.TOKENS,
             )
-        return Action(FINISH, {"result": f"Fetched {url}, summarized it and emailed the summary."})
+        return Action(FINISH, {"result": f"Fetched {url}, summarized it and emailed the summary."}, self.TOKENS)
 
     async def complete(self, prompt: str) -> str:
         text = prompt.split("\n\n", 1)[-1]

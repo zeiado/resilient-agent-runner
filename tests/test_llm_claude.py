@@ -74,3 +74,13 @@ async def test_refusal_and_truncation_raise(stop_reason):
     client = FakeClient([], stop_reason)
     with pytest.raises(RuntimeError, match=stop_reason):
         await ClaudeLLM(client, model="m").next_action("t", [])
+
+
+async def test_reported_usage_becomes_the_decision_tokens():
+    client = FakeClient([SimpleNamespace(type="tool_use", name="finish", input={"result": "r"})], "tool_use")
+    client.response.usage = SimpleNamespace(input_tokens=1200, output_tokens=34)
+    assert (await ClaudeLLM(client, model="m").next_action("t", [])).tokens == 1234
+
+    client = FakeClient([SimpleNamespace(type="text", text="Done.")], "end_turn")
+    client.response.usage = SimpleNamespace(input_tokens=10, output_tokens=5)
+    assert (await ClaudeLLM(client, model="m").next_action("t", [])).tokens == 15

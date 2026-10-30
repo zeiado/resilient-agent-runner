@@ -3,7 +3,7 @@ import uuid
 
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import JSONResponse
-from sqlalchemy import select, text, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 
 from app.db import Session
@@ -62,7 +62,13 @@ async def create_run(body: RunCreate, response: Response):
     async with Session() as session:
         new_id = await session.scalar(
             insert(Run)
-            .values(id=uuid.uuid4(), task=body.task, idempotency_key=body.idempotency_key, status="queued")
+            .values(
+                id=uuid.uuid4(),
+                task=body.task,
+                idempotency_key=body.idempotency_key,
+                max_tokens=body.max_tokens,
+                status="queued",
+            )
             .on_conflict_do_nothing(index_elements=["idempotency_key"])
             .returning(Run.id)
         )
@@ -123,5 +129,31 @@ async def reject_run(run_id: uuid.UUID):
     run_id_var.set(str(run_id))
     await decide(run_id, run_status="rejected", step_status="rejected")
     log.info("run rejected")
+    async with Session() as session:
+        return await load_run(session, run_id)
+
+
+@app.post("/runs/{run_id}/cancel", response_model=RunOut)
+async def cancel_run(run_id: uuid.UUID):
+    """Stop a run that has not ended. Clearing the lease makes the worker's next owned_run() fail,
+    so a worker in the middle of a step stops without writing its output or side effect."""
+    run_id_var.set(str(run_id))
+    async with Session() as session, session.begin():
+        if await session.get(Run, run_id) is None:
+            raise HTTPException(404, "run not found")
+        cancelled = await session.scalar(
+            update(Run)
+            .where(Run.id == run_id, Run.status.in_(("queued", "running", "awaiting_approval")))
+            .values(status="cancelled", lease_owner=None)
+            .returning(Run.id)
+        )
+        if cancelled is None:
+            raise HTTPException(409, "run has already ended")
+        await session.execute(
+            update(RunStep)
+            .where(RunStep.run_id == run_id, RunStep.status.in_(("pending", "awaiting_approval")))
+            .values(status="cancelled", finished_at=func.now())
+        )
+    log.info("run cancelled")
     async with Session() as session:
         return await load_run(session, run_id)

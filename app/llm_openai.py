@@ -47,19 +47,20 @@ class OpenAICompatibleLLM:
         choice = response.choices[0]
         if choice.finish_reason == "length":
             raise RuntimeError("model stopped with length")
-        return choice.message
+        usage = getattr(response, "usage", None)
+        return choice.message, usage.total_tokens if usage else 0
 
     async def next_action(self, task: str, steps: list[RunStep], nudge_reply: str | None = None) -> Action | TextReply:
         messages = build_messages(task, steps)
         if nudge_reply is not None:
             messages.append({"role": "assistant", "content": nudge_reply})
             messages.append({"role": "user", "content": NUDGE})
-        message = await self._create(messages=messages, tools=FUNCTIONS)
+        message, tokens = await self._create(messages=messages, tools=FUNCTIONS)
         if message.tool_calls:
             call = message.tool_calls[0].function
-            return Action(call.name, json.loads(call.arguments))
-        return TextReply(message.content or "")
+            return Action(call.name, json.loads(call.arguments), tokens)
+        return TextReply(message.content or "", tokens)
 
     async def complete(self, prompt: str) -> str:
-        message = await self._create(messages=[{"role": "user", "content": prompt}])
+        message, _ = await self._create(messages=[{"role": "user", "content": prompt}])
         return message.content or ""
