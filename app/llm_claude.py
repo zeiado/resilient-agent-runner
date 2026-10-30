@@ -63,6 +63,11 @@ TOOLS = [
 ]
 
 
+def usage_tokens(response) -> int:
+    usage = getattr(response, "usage", None)
+    return usage.input_tokens + usage.output_tokens if usage else 0
+
+
 def build_messages(task: str, steps: list[RunStep]) -> list[dict]:
     """Rebuild the conversation from the checkpointed steps, so a resumed run needs no in-memory state."""
     messages = [{"role": "user", "content": task}]
@@ -107,8 +112,9 @@ class ClaudeLLM:
         )
         for block in response.content:
             if block.type == "tool_use":
-                return Action(block.name, dict(block.input))
-        return TextReply("".join(block.text for block in response.content if block.type == "text"))
+                return Action(block.name, dict(block.input), usage_tokens(response))
+        text = "".join(block.text for block in response.content if block.type == "text")
+        return TextReply(text, usage_tokens(response))
 
     async def complete(self, prompt: str) -> str:
         response = await self._create(messages=[{"role": "user", "content": prompt}])

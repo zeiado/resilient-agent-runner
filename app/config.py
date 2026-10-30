@@ -7,6 +7,9 @@ MAX_STEPS = int(os.environ.get("MAX_STEPS", "10"))
 TOOL_TIMEOUT_SECONDS = float(os.environ.get("TOOL_TIMEOUT_SECONDS", "30"))
 MAX_ATTEMPTS = int(os.environ.get("MAX_ATTEMPTS", "3"))
 RETRY_BACKOFF_SECONDS = float(os.environ.get("RETRY_BACKOFF_SECONDS", "1"))
+# A run fails when the model asks for the same tool call (same input) that already returned the
+# same output REPEAT_LIMIT - 1 times in a row: it is stuck. 0 turns the check off.
+REPEAT_LIMIT = int(os.environ.get("REPEAT_LIMIT", "3"))
 
 HEARTBEAT_INTERVAL_SECONDS = float(os.environ.get("HEARTBEAT_INTERVAL_SECONDS", "10"))
 HEARTBEAT_STALE_SECONDS = float(os.environ.get("HEARTBEAT_STALE_SECONDS", "60"))

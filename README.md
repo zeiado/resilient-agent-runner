@@ -37,9 +37,10 @@ docker compose run --rm tests       # test suite (real Postgres and Redis)
 
 ```bash
 curl -X POST localhost:8080/runs -H 'content-type: application/json' \
-  -d '{"task": "Summarize https://example.com and email it", "idempotency_key": "abc-1"}'
+  -d '{"task": "Summarize https://example.com and email it", "idempotency_key": "abc-1", "max_tokens": 50000}'
 curl localhost:8080/runs/<id>
 curl -X POST localhost:8080/runs/<id>/approve     # or /reject
+curl -X POST localhost:8080/runs/<id>/cancel      # stop a run that hasn't ended
 curl localhost:8080/health
 ```
 
@@ -74,10 +75,14 @@ stateDiagram-v2
     awaiting_approval --> queued: POST /approve
     awaiting_approval --> rejected: POST /reject
     running --> completed: LLM calls the finish tool
-    running --> failed: 3 failed attempts, step limit (10), no tool call twice, or LLM error
+    running --> failed: 3 failed attempts, step limit (10), token budget, no progress, no tool call twice, or LLM error
+    queued --> cancelled: POST /cancel
+    running --> cancelled: POST /cancel
+    awaiting_approval --> cancelled: POST /cancel
     completed --> [*]
     failed --> [*]
     rejected --> [*]
+    cancelled --> [*]
 ```
 
 ## How recovery works
@@ -99,6 +104,20 @@ stateDiagram-v2
 A step that was in flight when the worker died is executed again (at-least-once). `fetch_url` and
 `summarize` are read-only, and `send_email` is covered by the unique key.
 
+## Guards
+
+- **Token budget.** `max_tokens` on `POST /runs` caps the tokens the model spends deciding steps. Each
+  decision's usage (from the provider's `usage` field) is saved on its step and added to
+  `runs.tokens_used` in the same transaction as the checkpoint. A decision that would go over the
+  budget fails the run before its tool is checkpointed or executed.
+- **No-progress check.** If the model asks for the same tool with the same input after it already
+  returned the same output twice in a row, the run fails instead of burning steps (`REPEAT_LIMIT=3`,
+  `0` turns it off). Retrying with a changed input, or getting a different output, is not a loop.
+- **Cancel.** `POST /runs/{id}/cancel` is a conditional UPDATE from `queued`, `running` or
+  `awaiting_approval` to `cancelled` that also clears the lease. A worker in the middle of a step
+  finds no owned row at its next write and stops (the same fencing as a lost lease), so the step's
+  output and side effect are never committed.
+
 ## Failure scenarios tested
 
 | Scenario | What happens | How it's tested |
@@ -117,6 +136,10 @@ A step that was in flight when the worker died is executed again (at-least-once)
 | `send_email` reached | Run stops at `awaiting_approval`; nothing is sent until approved; approve then sends exactly one | `test_approval.py::test_run_pauses_for_approval_then_approve_sends_exactly_one_email` |
 | Approval rejected | Run is `rejected`, outbox empty | `test_approval.py::test_reject_ends_run_without_sending` |
 | Approve and reject at the same time | One returns 200, the other 409 | `test_approval.py::test_concurrent_approve_and_reject_only_one_wins` |
+| A decision would go over `max_tokens` | Run is `failed` with `token budget exceeded: <used> of <max> tokens`; that tool never runs | `test_budget.py::test_run_fails_when_a_decision_would_exceed_the_budget` |
+| Model repeats a call that keeps returning the same output | Run is `failed` with `no progress: ...` after 2 identical results | `test_budget.py::test_same_call_with_the_same_output_stops_the_run` |
+| Run cancelled while a worker is inside a tool call | Worker stops at its next write; step is `cancelled` with no output, no email, later steps never run | `test_cancel.py::test_cancel_during_a_step_stops_the_worker_without_writing` |
+| Approve and cancel at the same time | Run ends `cancelled` either way and nothing is sent | `test_cancel.py::test_concurrent_approve_and_cancel_never_send` |
 | One API replica stopped | Nginx retries the request on the other replica, then stops routing to the dead one | `scripts/demo.sh` step 6 (20 of 20 requests return 200) |
 
 ## Known limits
@@ -128,6 +151,8 @@ A step that was in flight when the worker died is executed again (at-least-once)
 - `fetch_url` only fetches public addresses: it resolves the host, refuses loopback, private and
   link-local addresses, connects to the address it checked, and re-checks every redirect (max 3).
   A real deployment would still put an egress proxy in front of it.
+- The token budget counts planning decisions only. Tokens used inside the `summarize` tool, and
+  decisions lost in a crash before they were checkpointed, are not counted.
 - The Claude implementation is unit-tested against a fake client only. It has not been run against the
   live API.
 

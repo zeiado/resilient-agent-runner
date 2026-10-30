@@ -8,7 +8,7 @@ from sqlalchemy import and_, func, or_, select, update
 
 from app import config
 from app.db import Session
-from app.llm import FINISH, LLM, TextReply
+from app.llm import FINISH, LLM, Action, TextReply
 from app.log import run_id_var
 from app.models import Run, RunStep
 from app.tools import NonRetryable, Tool
@@ -69,12 +69,18 @@ async def owned_run(run_id: uuid.UUID, worker_id: str):
 
 
 async def finish_run(
-    run_id: uuid.UUID, worker_id: str, status: str, error: str | None = None, result: str | None = None
+    run_id: uuid.UUID,
+    worker_id: str,
+    status: str,
+    error: str | None = None,
+    result: str | None = None,
+    tokens: int = 0,
 ) -> None:
     async with owned_run(run_id, worker_id) as (_, run):
         run.status = status
         run.error = error
         run.result = result
+        run.tokens_used += tokens
         run.lease_owner = None
     log.info("run %s%s", status, f": {error}" if error else "")
 
@@ -108,25 +114,42 @@ async def agent_loop(run_id: uuid.UUID, worker_id: str, llm: LLM, tools: dict[st
             if len(steps) >= config.MAX_STEPS:
                 await finish_run(run_id, worker_id, "failed", f"step limit of {config.MAX_STEPS} reached")
                 return
+            if run.max_tokens is not None and run.tokens_used >= run.max_tokens:
+                await finish_run(run_id, worker_id, "failed", budget_error(run.tokens_used, run.max_tokens))
+                return
             try:
                 action = await llm.next_action(run.task, steps)
+                tokens = action.tokens
                 if isinstance(action, TextReply):
                     # One in-memory correction. It is not checkpointed, so it is never a step,
                     # and a resumed run simply makes this decision again from the saved steps.
                     log.warning("model replied without a tool call, asking once more")
                     action = await llm.next_action(run.task, steps, nudge_reply=action.text)
+                    tokens += action.tokens
             except Exception as exc:
                 await finish_run(run_id, worker_id, "failed", f"llm error: {type(exc).__name__}: {exc}")
                 return
+            if run.max_tokens is not None and run.tokens_used + tokens > run.max_tokens:
+                error = budget_error(run.tokens_used + tokens, run.max_tokens)
+                await finish_run(run_id, worker_id, "failed", error, tokens=tokens)
+                return
             if isinstance(action, TextReply):
                 error = f"model replied without a tool call: {action.text[:200]}"
-                await finish_run(run_id, worker_id, "failed", error)
+                await finish_run(run_id, worker_id, "failed", error, tokens=tokens)
                 return
             if action.tool == FINISH:
-                await finish_run(run_id, worker_id, "completed", result=str(action.input.get("result", "")))
+                result = str(action.input.get("result", ""))
+                await finish_run(run_id, worker_id, "completed", result=result, tokens=tokens)
                 return
             if action.tool not in tools:
-                await finish_run(run_id, worker_id, "failed", f"llm chose unknown tool: {action.tool}")
+                await finish_run(run_id, worker_id, "failed", f"llm chose unknown tool: {action.tool}", tokens=tokens)
+                return
+            if is_stuck(steps, action):
+                error = (
+                    f"no progress: {action.tool} already returned the same output for the same input "
+                    f"{config.REPEAT_LIMIT - 1} times in a row"
+                )
+                await finish_run(run_id, worker_id, "failed", error, tokens=tokens)
                 return
 
             needs_approval = tools[action.tool].needs_approval
@@ -137,8 +160,10 @@ async def agent_loop(run_id: uuid.UUID, worker_id: str, llm: LLM, tools: dict[st
                     tool=action.tool,
                     input=action.input,
                     status="awaiting_approval" if needs_approval else "pending",
+                    tokens=tokens,
                 )
                 session.add(step)
+                owned.tokens_used += tokens
                 if needs_approval:
                     owned.status = "awaiting_approval"
                     owned.lease_owner = None
@@ -149,6 +174,22 @@ async def agent_loop(run_id: uuid.UUID, worker_id: str, llm: LLM, tools: dict[st
 
         if not await execute_step(run_id, worker_id, step, tools[step.tool]):
             return
+
+
+def budget_error(used: int, limit: int) -> str:
+    return f"token budget exceeded: {used} of {limit} tokens"
+
+
+def is_stuck(steps: list[RunStep], action: Action) -> bool:
+    """True if the last REPEAT_LIMIT - 1 steps all ran this exact call and got one identical output."""
+    n = config.REPEAT_LIMIT - 1
+    if n <= 0 or len(steps) < n:
+        return False
+    recent = steps[-n:]
+    return all(
+        s.status == "completed" and s.tool == action.tool and s.input == action.input and s.output == recent[0].output
+        for s in recent
+    )
 
 
 async def execute_step(run_id: uuid.UUID, worker_id: str, step: RunStep, tool: Tool) -> bool:
